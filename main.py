@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from groq import Groq
@@ -33,7 +33,11 @@ def root():
 
 @app.post("/generate-calendar")
 def generate_calendar(req: CropRequest):
-    prompt = f"""
+    if not req.cropType or len(req.cropType) < 2:
+        raise HTTPException(status_code=400, detail="Invalid crop type")
+
+    try:
+        prompt = f"""
 You are an expert Indian agricultural scientist. Generate a detailed 20-week farming calendar for:
 - Crop: {req.cropType}
 - Variety: {req.variety or 'standard'}
@@ -60,21 +64,31 @@ Calculate dates starting from {req.sowingDate}.
 Return ONLY the JSON array, no other text.
 """
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=4000,
-        temperature=0.3,
-    )
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=4000,
+            temperature=0.3,
+        )
 
-    raw = response.choices[0].message.content.strip()
+        raw = response.choices[0].message.content.strip()
 
-    # Clean up response
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
 
-    calendar = json.loads(raw)
-    return {"success": True, "calendar": calendar}
+        calendar = json.loads(raw)
+        return {"success": True, "calendar": calendar}
+
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=500,
+            detail="AI returned invalid JSON. Please try again."
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"API error: {str(e)}"
+        )
