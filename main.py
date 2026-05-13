@@ -10,7 +10,6 @@ load_dotenv()
 
 app = FastAPI(title="Annadata API")
 
-# CORS — allows mobile app to call this API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,6 +18,19 @@ app.add_middleware(
 )
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# Language map
+LANGUAGE_MAP = {
+    "en": "English",
+    "hi": "Hindi",
+    "kn": "Kannada",
+    "te": "Telugu",
+    "ta": "Tamil",
+    "mr": "Marathi",
+    "ml": "Malayalam",
+    "bn": "Bengali",
+    "pa": "Punjabi",
+}
 
 class CropRequest(BaseModel):
     cropType: str
@@ -31,10 +43,17 @@ class CropRequest(BaseModel):
 def root():
     return {"status": "Annadata API is running 🌾"}
 
+@app.get("/languages")
+def get_languages():
+    return {"languages": LANGUAGE_MAP}
+
 @app.post("/generate-calendar")
 def generate_calendar(req: CropRequest):
     if not req.cropType or len(req.cropType) < 2:
         raise HTTPException(status_code=400, detail="Invalid crop type")
+
+    # Get full language name
+    language_name = LANGUAGE_MAP.get(req.language, "English")
 
     try:
         prompt = f"""
@@ -43,7 +62,7 @@ You are an expert Indian agricultural scientist. Generate a detailed 20-week far
 - Variety: {req.variety or 'standard'}
 - Sowing Date: {req.sowingDate}
 - Location: {req.location}, India
-- Language: {req.language}
+- Output Language: {language_name}
 
 Return ONLY a JSON array with exactly 20 objects. Each object must have:
 {{
@@ -54,14 +73,20 @@ Return ONLY a JSON array with exactly 20 objects. Each object must have:
     {{
       "type": "water|fertilize|pest|harvest|prepare",
       "title": "Task title in English",
-      "desc": "Detailed description",
-      "translatedTask": "Task title in {req.language}"
+      "desc": "Detailed description in English",
+      "translatedTitle": "Task title in {language_name}",
+      "translatedDesc": "Task description in {language_name}"
     }}
   ]
 }}
 
-Calculate dates starting from {req.sowingDate}.
-Return ONLY the JSON array, no other text.
+Important rules:
+- Calculate all dates starting from {req.sowingDate}
+- Each week must have 1-3 relevant tasks
+- Tasks must be specific to {req.cropType} farming in {req.location}, India
+- translatedTitle and translatedDesc must be in {language_name} script
+- If language is English, translatedTitle = title and translatedDesc = desc
+- Return ONLY the JSON array, absolutely no other text
 """
 
         response = client.chat.completions.create(
@@ -80,7 +105,16 @@ Return ONLY the JSON array, no other text.
         raw = raw.strip()
 
         calendar = json.loads(raw)
-        return {"success": True, "calendar": calendar}
+
+        return {
+            "success": True,
+            "cropType": req.cropType,
+            "location": req.location,
+            "language": req.language,
+            "languageName": language_name,
+            "totalWeeks": len(calendar),
+            "calendar": calendar
+        }
 
     except json.JSONDecodeError:
         raise HTTPException(
