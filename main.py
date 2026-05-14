@@ -52,19 +52,18 @@ def generate_calendar(req: CropRequest):
     if not req.cropType or len(req.cropType) < 2:
         raise HTTPException(status_code=400, detail="Invalid crop type")
 
-    # Get full language name
     language_name = LANGUAGE_MAP.get(req.language, "English")
 
-    try:
+    def try_generate():
         prompt = f"""
-You are an expert Indian agricultural scientist. Generate a detailed 20-week farming calendar for:
+You are an expert Indian agricultural scientist. Generate a 20-week farming calendar for:
 - Crop: {req.cropType}
 - Variety: {req.variety or 'standard'}
 - Sowing Date: {req.sowingDate}
 - Location: {req.location}, India
 - Output Language: {language_name}
 
-Return ONLY a JSON array with exactly 20 objects. Each object must have:
+Return ONLY a valid JSON array with exactly 20 objects. Each object:
 {{
   "weekNum": 1,
   "startDate": "YYYY-MM-DD",
@@ -73,22 +72,19 @@ Return ONLY a JSON array with exactly 20 objects. Each object must have:
     {{
       "type": "water|fertilize|pest|harvest|prepare",
       "title": "Task title in English",
-      "desc": "Detailed description in English",
+      "desc": "Description in English",
       "translatedTitle": "Task title in {language_name}",
-      "translatedDesc": "Task description in {language_name}"
+      "translatedDesc": "Description in {language_name}"
     }}
   ]
 }}
 
-Important rules:
-- Calculate all dates starting from {req.sowingDate}
-- Each week must have 1-3 relevant tasks
-- Tasks must be specific to {req.cropType} farming in {req.location}, India
-- translatedTitle and translatedDesc must be in {language_name} script
-- If language is English, translatedTitle = title and translatedDesc = desc
-- Return ONLY the JSON array, absolutely no other text
+Rules:
+- Calculate dates from {req.sowingDate}
+- Each week has 1-3 tasks specific to {req.cropType} in {req.location}
+- If language is English, translatedTitle = title
+- Return ONLY the JSON array, no markdown, no extra text
 """
-
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
@@ -98,31 +94,41 @@ Important rules:
 
         raw = response.choices[0].message.content.strip()
 
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
+        # Clean markdown if present
+        if "```" in raw:
+            parts = raw.split("```")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("json"):
+                    part = part[4:].strip()
+                if part.startswith("["):
+                    raw = part
+                    break
+
         raw = raw.strip()
+        return json.loads(raw)
 
-        calendar = json.loads(raw)
+    # Try up to 3 times
+    last_error = None
+    for attempt in range(3):
+        try:
+            calendar = try_generate()
+            return {
+                "success": True,
+                "cropType": req.cropType,
+                "location": req.location,
+                "language": req.language,
+                "languageName": language_name,
+                "totalWeeks": len(calendar),
+                "calendar": calendar
+            }
+        except json.JSONDecodeError as e:
+            last_error = str(e)
+            continue
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"API error: {str(e)}")
 
-        return {
-            "success": True,
-            "cropType": req.cropType,
-            "location": req.location,
-            "language": req.language,
-            "languageName": language_name,
-            "totalWeeks": len(calendar),
-            "calendar": calendar
-        }
-
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=500,
-            detail="AI returned invalid JSON. Please try again."
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"API error: {str(e)}"
-        )
+    raise HTTPException(
+        status_code=500,
+        detail=f"AI returned invalid JSON after 3 attempts. Please try again."
+    )
